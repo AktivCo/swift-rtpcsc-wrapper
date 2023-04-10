@@ -3,6 +3,7 @@
 
 import PackageDescription
 
+
 let package = Package(
     name: "rt-pcsc-wrapper",
     platforms: [
@@ -11,11 +12,11 @@ let package = Package(
     products: [
         .library(
             name: "PcscWrapper",
-            targets: ["PcscWrapper"]),
+            targets: ["PcscWrapper"])
     ],
     dependencies: [
         .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/rt-pcsc.git",
-                         revision: "663b57fbcb6e789d17431897ef6b8d610e48b0ac")
+                 revision: "61b348005219d0dedbc60b910c00b1261bdaac36")
     ],
     targets: [
         .target(
@@ -24,6 +25,6 @@ let package = Package(
                 .product(name: "RtPcsc",
                          package: "rt-pcsc")
             ]
-        ),
+        )
     ]
 )
