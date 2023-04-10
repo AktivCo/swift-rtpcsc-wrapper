@@ -1,5 +1,11 @@
 stages:
+  - analyse
   - build
+
+include:
+  - project: rutoken/dev/devops/checker/code-quality
+    ref: latest
+    file: /code-quality.yaml
 
 variables:
   VAULT_ADDR: "https://vault.aktivco.ru"
@@ -15,6 +21,10 @@ variables:
   - chmod 0600 ${SSH_PRIVATE_KEY}
 
   - vault token revoke -self
+
+code_quality:
+  stage: analyse
+  extends: .code-quality
 
 build:
   stage: build
