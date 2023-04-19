@@ -6,10 +6,8 @@ import RtPcsc
 public enum RtReaderError: Error {
     case unknown
     case readerUnavailable
-    case timeout
-    case cancelledByUser
     case invalidContext
-    case unsupportedDevice
+    case nfcIsStopped(RtNfcStopReason)
 }
 
 public enum RtNfcStopReason: UInt8 {
@@ -240,16 +238,11 @@ public class RtPcscWrapper {
         } while state.dwEventState == SCARD_STATE_EMPTY
 
         guard (SCARD_STATE_PRESENT | SCARD_STATE_CHANGED | SCARD_STATE_INUSE) == state.dwEventState else {
-            switch getLastNfcStopReason(ofHandle: handle) {
-            case RUTOKEN_NFC_STOP_REASON_CANCELLED_BY_USER:
-                throw RtReaderError.cancelledByUser
-            case RUTOKEN_NFC_STOP_REASON_TIMEOUT:
-                throw RtReaderError.timeout
-            case RUTOKEN_NFC_STOP_REASON_UNSUPPORTED_DEVICE:
-                throw RtReaderError.unsupportedDevice
-            default:
-                throw RtReaderError.unknown
+            let res = getLastNfcStopReason(ofHandle: handle)
+            if let reason = RtNfcStopReason(rawValue: res) {
+                throw RtReaderError.nfcIsStopped(reason)
             }
+            throw RtReaderError.unknown
         }
     }
 
@@ -279,7 +272,7 @@ public class RtPcscWrapper {
         }
     }
 
-    public func getLastNfcStopReason(onReader readerName: String) throws -> RtNfcStopReason {
+    public func getLastNfcStopReason(onReader readerName: String) throws -> RtReaderError {
         guard let ctx = self.context else {
             throw RtReaderError.invalidContext
         }
@@ -295,7 +288,10 @@ public class RtPcscWrapper {
             SCardDisconnect(handle, 0)
         }
 
-        return RtNfcStopReason(rawValue: getLastNfcStopReason(ofHandle: handle)) ?? .unknown
+        if let reason = RtNfcStopReason(rawValue: getLastNfcStopReason(ofHandle: handle)) {
+            return RtReaderError.nfcIsStopped(reason)
+        }
+        return RtReaderError.unknown
     }
 
     public func stop() {
