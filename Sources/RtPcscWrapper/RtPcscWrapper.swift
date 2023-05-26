@@ -25,7 +25,6 @@ public enum RtReaderType {
     case nfc
     case vcr
     case usb
-    case ble
 }
 
 public struct RtReader: Identifiable {
@@ -175,8 +174,6 @@ public class RtPcscWrapper {
             return .vcr
         case RUTOKEN_USB_TYPE:
             return .usb
-        case RUTOKEN_BLE_TYPE:
-            return .ble
         default:
             return .unknown
         }
