@@ -61,9 +61,14 @@ public class RtPcscWrapper {
     private var context: SCARDCONTEXT?
 
     private var readersPublisher = CurrentValueSubject<[RtReader], Never>([])
+    private var isNfcSearchingActivePublisher = CurrentValueSubject<Bool, Never>(false)
 
     public var readers: AnyPublisher<[RtReader], Never> {
         readersPublisher.share().eraseToAnyPublisher()
+    }
+
+    public var isNfcSearchingActive: AnyPublisher<Bool, Never> {
+        isNfcSearchingActivePublisher.share().eraseToAnyPublisher()
     }
 
     public init() {}
@@ -188,6 +193,10 @@ public class RtPcscWrapper {
             throw RtReaderError.invalidContext
         }
 
+        defer {
+            self.isNfcSearchingActivePublisher.send(false)
+        }
+
         repeat {
             state.dwEventState = 0
 
@@ -197,6 +206,35 @@ public class RtPcscWrapper {
 
             state.dwCurrentState = state.dwEventState & ~DWORD(SCARD_STATE_CHANGED)
         } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
+    }
+
+    public func nfcExchangeIsStopped(for readerName: String) -> AnyPublisher<Void, Never> {
+        return Deferred {
+            Future { promise in
+                Task {
+                    defer {
+                        promise(.success(()))
+                    }
+                    var state = SCARD_READERSTATE()
+                    state.szReader = (readerName as NSString).utf8String
+                    state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
+
+                    guard let ctx = self.context else {
+                        throw RtReaderError.invalidContext
+                    }
+
+                    repeat {
+                        state.dwEventState = 0
+
+                        guard SCARD_S_SUCCESS == SCardGetStatusChangeA(ctx, INFINITE, &state, 1) else {
+                            throw RtReaderError.readerUnavailable
+                        }
+
+                        state.dwCurrentState = state.dwEventState & ~DWORD(SCARD_STATE_CHANGED)
+                    } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
+                }
+            }
+        }.eraseToAnyPublisher()
     }
 
     public func startNfc(onReader readerName: String, waitMessage: String, workMessage: String) throws {
@@ -226,6 +264,7 @@ public class RtPcscWrapper {
             throw RtReaderError.readerUnavailable
         }
 
+        isNfcSearchingActivePublisher.send(true)
         // Global SCardGetStatusChange loop can request reader types with SCardConnect call.
         // In this case we can receive events for NFC/VCR reader and should continue waiting for changing of slot state.
         repeat {
