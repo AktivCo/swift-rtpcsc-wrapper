@@ -63,10 +63,12 @@ public class RtPcscWrapper {
     private var readersPublisher = CurrentValueSubject<[RtReader], Never>([])
     private var isNfcSearchingActivePublisher = CurrentValueSubject<Bool, Never>(false)
 
+    /// Available readers list publisher
     public var readers: AnyPublisher<[RtReader], Never> {
         readersPublisher.share().eraseToAnyPublisher()
     }
 
+    /// Publisher of the state of the NFC scanning session
     public var isNfcSearchingActive: AnyPublisher<Bool, Never> {
         isNfcSearchingActivePublisher.share().eraseToAnyPublisher()
     }
@@ -184,6 +186,12 @@ public class RtPcscWrapper {
         }
     }
 
+    /// Blocking function that waits until the NFC scanning session gets suspended
+    /// - Parameter readerName: Name of the reader where the NFC scanning session was created
+    ///
+    /// This function is necessary because of race condition between `PKCS token observer` and `StartNfc` function from the wrapper.
+    /// On the one side `StartNfc` is a blocking function that waits for token appearance. On the other side user can get token out from the NFC
+    /// scanner before PKCS finds the token. In this case we have to wait until the NFC scanning session gets suspended or user brings the token back.
     public func waitForExchangeIsOver(withReader readerName: String) throws {
         var state = SCARD_READERSTATE()
         state.szReader = (readerName as NSString).utf8String
@@ -208,6 +216,15 @@ public class RtPcscWrapper {
         } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
     }
 
+    /// Creates publisher that notifies about suspension of the NFC scanning session
+    /// - Parameter readerName: Name of the reader where the NFC scanning session was created
+    /// - Returns: A publisher  that will notify when the state of the NFC reader changes to muted
+    ///
+    /// The "Muted" state means that the NFC reader doesn't have present searching session and doesn't have any available tokens too.
+    ///
+    /// This function is necessary because of race condition between `PKCS token observer` and `StartNfc` function from the wrapper.
+    /// On the one side `StartNfc` is a blocking function that waits for token appearance. On the other side user can get token out from the NFC
+    /// scanner before PKCS finds the token. In this case we have to wait until the NFC scanning session gets suspended or user brings the token back.
     public func nfcExchangeIsStopped(for readerName: String) -> AnyPublisher<Void, Never> {
         return Deferred {
             Future { promise in
@@ -237,6 +254,11 @@ public class RtPcscWrapper {
         }.eraseToAnyPublisher()
     }
 
+    /// Creates the NFC scanning session
+    /// - Parameters:
+    ///   - readerName: Name of the reader where the NFC scanning session has to be created
+    ///   - waitMessage: A message that will appear on the NFC scanning view until token is brought to the scanner
+    ///   - workMessage: A message that will appear on the NFC scanning view during connection with token
     public func startNfc(onReader readerName: String, waitMessage: String, workMessage: String) throws {
         guard let ctx = self.context else {
             throw RtReaderError.invalidContext
@@ -282,6 +304,10 @@ public class RtPcscWrapper {
         }
     }
 
+    /// Suspends the NFC scanning session
+    /// - Parameters:
+    ///   - readerName: Name of the reader where the NFC scanning has to be suspended
+    ///   - message: A message that will appear on the NFC scanning view
     public func stopNfc(onReader readerName: String, withMessage message: String) throws {
         guard let ctx = self.context else {
             throw RtReaderError.invalidContext
@@ -308,6 +334,9 @@ public class RtPcscWrapper {
         }
     }
 
+    /// Returns a reason why the NFC scanning session got canceled
+    /// - Parameter readerName: Name of the reader where the NFC scanning was suspended
+    /// - Returns: Error that contains the actual reason
     public func getLastNfcStopReason(onReader readerName: String) throws -> RtReaderError {
         guard let ctx = self.context else {
             throw RtReaderError.invalidContext
@@ -330,6 +359,7 @@ public class RtPcscWrapper {
         return RtReaderError.unknown
     }
 
+    /// Suspend the loop observer for detecting new readers appearance
     public func stop() {
         guard let ctx = context else {
             return
@@ -340,6 +370,7 @@ public class RtPcscWrapper {
         context = nil
     }
 
+    /// Creates the loop observer for detecting new readers appearance
     public func start() {
         guard context == nil else {
             return
