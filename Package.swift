@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/AktivCo/swift-rtpcsc-binary.git",
-                 revision: "c6e31143ab799e138c8d864da134d49e2f352777")
+                 exact: Version(stringLiteral: "5.1.1"))
     ],
     targets: [
         .target(
