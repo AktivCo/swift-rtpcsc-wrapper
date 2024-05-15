@@ -283,7 +283,7 @@ public class RtPcscWrapper {
 
         guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_START_NFC), (message as NSString).utf8String,
                                               DWORD(message.utf8.count), nil, 0, nil) else {
-            throw RtReaderError.readerUnavailable
+            throw RtReaderError.unknown
         }
 
         isNfcSearchingActivePublisher.send(true)
@@ -357,6 +357,35 @@ public class RtPcscWrapper {
             return RtReaderError.nfcIsStopped(reason)
         }
         return RtReaderError.unknown
+    }
+
+    /// Returns a remaining time of when the NFC reader will be ready to search token again
+    /// - Parameter readerName: Name of the reader where the NFC reader
+    /// - Returns: Remaining time in seconds
+    public func getNfcCooldown(for readerName: String) throws -> UInt {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+
+        var result = UInt8(0)
+        var resultLen: DWORD = 0
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_NFC_COOLDOWN), nil,
+                                              0, &result, 1, &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        return UInt(result)
     }
 
     /// Suspend the loop observer for detecting new readers appearance
