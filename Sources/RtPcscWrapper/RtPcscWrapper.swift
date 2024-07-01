@@ -218,7 +218,7 @@ public class RtPcscWrapper {
 
     /// Creates publisher that notifies about suspension of the NFC scanning session
     /// - Parameter readerName: Name of the reader where the NFC scanning session was created
-    /// - Returns: A publisher  that will notify when the state of the NFC reader changes to muted
+    /// - Returns: A publisher that will notify when the state of the NFC reader changes to muted
     ///
     /// The "Muted" state means that the NFC reader doesn't have present searching session and doesn't have any available tokens too.
     ///
@@ -359,6 +359,44 @@ public class RtPcscWrapper {
         return RtReaderError.unknown
     }
 
+    /// Returns VCR fingerprint related to connected application
+    /// - Parameter readerName: Name of the VCR
+    /// - Returns: Fingerprint for current VCR connection
+    public func getFingerprint(for readerName: String) throws -> Data {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+
+        var resultLen: DWORD = 0
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
+                                  0, nil, 0, &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(resultLen))
+        defer {
+            pointer.deallocate()
+        }
+
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
+                                  0, pointer, DWORD(resultLen), &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        return Data(bytes: pointer, count: Int(resultLen))
+    }
+
     /// Returns a remaining time of when the NFC reader will be ready to search token again
     /// - Parameter readerName: Name of the reader where the NFC reader
     /// - Returns: Remaining time in seconds
@@ -442,7 +480,7 @@ public class RtPcscWrapper {
 
                 if readerStates.states.contains(where: { isAddedNewReader($0) || isIgnoredReader($0) }) {
                     let readerNames = getReaderList()
-                    readersPublisher.send(readerNames.map { RtReader(name: $0, type: getReaderType(for: $0))})
+                    readersPublisher.send(readerNames.map { RtReader(name: $0, type: getReaderType(for: $0)) })
                     readerStates = getReaderStates(for: readerNames)
 
                     var newReaderState = SCARD_READERSTATE()
