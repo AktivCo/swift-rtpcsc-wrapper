@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/rt-pcsc.git",
-                 revision: "2fcf2a6e8386da31852580e05b8588a625df9083")
+                 revision: "6cbc6003c3769378f0b4fcae60ccee3a8e95d8b0")
     ],
     targets: [
         .target(
