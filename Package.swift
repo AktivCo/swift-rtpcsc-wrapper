@@ -15,15 +15,14 @@ let package = Package(
             targets: ["RtPcscWrapper"])
     ],
     dependencies: [
-        .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/rt-pcsc.git",
-                 revision: "6cbc6003c3769378f0b4fcae60ccee3a8e95d8b0")
+        .package(url: "https://github.com/AktivCo/swift-rtpcsc-binary.git", exact: .init(stringLiteral: "5.3.0"))
     ],
     targets: [
         .target(
             name: "RtPcscWrapper",
             dependencies: [
                 .product(name: "RtPcsc",
-                         package: "rt-pcsc")
+                         package: "swift-rtpcsc-binary")
             ]
         )
     ]
