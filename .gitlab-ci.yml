@@ -1,10 +1,13 @@
 stages:
   - build
 
-
 variables:
   VAULT_ADDR: "https://vault.aktivco.ru"
 
+  TART_IMAGE: tart-hosted.aktivco.ru/rutoken/macos:2.2.0
+
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
 
 .vault_provision_secrets: &vault_secrets
   - PROJECT_ROLE="ci-swift-package"
@@ -19,10 +22,9 @@ variables:
 
 build:
   stage: build
-  tags: [vagrant-darwin]
+  tags: [tart-darwin]
+  image: $TART_IMAGE
   variables:
-    RT_CI_VAGRANT_BOX_NAME: rutoken/macos
-    RT_CI_VAGRANT_BOX_VERSION: 1.6.3
     RT_CI_VAGRANT_BOX_CPUS: 2
     RT_CI_VAGRANT_BOX_MEMORY: 4096
   before_script:
@@ -33,5 +35,6 @@ build:
   script:
     - |
       xcodebuild clean build  -scheme rt-pcsc-wrapper \
+                              -skipPackagePluginValidation \
                               -destination generic/platform=iOS \
                               -scmProvider system
