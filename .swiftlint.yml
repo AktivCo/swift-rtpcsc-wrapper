@@ -1,0 +1,90 @@
+strict: true
+
+vertical_whitespace:
+  max_empty_lines: 2
+
+line_length: 150
+
+opt_in_rules:
+  - sorted_imports
+  - empty_count
+
+disabled_rules:
+  # We used dependencies with different naming conventions (pkcs11, openssl, rtengine) and it's easier to
+  # refer them via original conventions rather then cast all names.
+  - identifier_name
+
+  # Length or count of something is a metric of code quality, but it is not a goal by itself.
+  # We don't want to enforce it just to enforce. Selective refactoring is better.
+  - function_body_length
+  - file_length
+  - type_body_length
+  - function_parameter_count
+  - cyclomatic_complexity
+
+  # This rule has flaws described here: https://github.com/realm/SwiftLint/issues/5263#issuecomment-2115182747
+  # and there is MR which reverts part of this rule: https://github.com/realm/SwiftLint/pull/5601
+  # so this line should be deleted when new version of swiftlint arrives.
+  - non_optional_string_data_conversion
+
+custom_rules:
+  # Separate import block with two \n from other code
+  two_lines_after_import:
+    included: ".*\\.swift"
+    regex: "(?<=import\\s)\\w+(\n){1,2}(?!import)\\w+"
+    message: "Use two blank lines to separate import from code."
+    severity: error
+
+  # No consecutive \n anywhere except 'two_lines_after_import'
+  one_line_before_import:
+    included: ".*\\.swift"
+    regex: "((?<=\/\/(\n{3}|\n))import)"
+    message: "Use one blank line to separate file's header and import."
+    severity: error
+
+  one_line_before_testable:
+    included: ".*\\.swift"
+    regex: "(?<=import\\s)\\w+(\n{3}|\n)(?=(@testable))"
+    message: "Use one blank line to separate import and testable import."
+    severity: error
+
+  # Don't mix russian and latin letters in single word - it leads to hard-to-understand problems
+  one_word_one_language:
+    included: ".*\\.swift"
+    regex: "([^\\\\][a-zA-Z]+[а-яА-Я]|[а-яА-Я]+[a-zA-Z])"
+    message: "Use characters from one language for one word."
+    severity: error
+
+  # Don't use consecutive spaces except for intending
+  no_more_than_one_consecutive_space:
+    included: ".*\\.swift"
+    regex: "([^\\s\/]  )"
+    message: "Use one space after bracket"
+    severity: error
+
+  # Don't use space before dot in consecutive calls like 'foo() .bar  .foo2()'
+  no_whitespace_before_dot:
+    included: ".*\\.swift"
+    regex: "([\\w\\)\\(\\[\\]](?<!case|return|let)\\s(?<!\n)\\s*\\.)"
+    message: "Use no whitespaces before dots"
+    severity: error
+
+  # Swift allows to omit space between brace and keyword like 'async', 'throw', etc.
+  # This rule reduces amount of such cases, but does not prevent such cases in string iternpolation like '"some\(var)thing"'
+  one_space_after_closing_brace:
+    included: ".*\\.swift"
+    regex: "((?<!\\\\)\\([^\\)]*\\)[\\d\\w])"
+    message: "Use one space after closing brace"
+    severity: error
+
+  one_space_after_open_brace:
+    included: ".*\\.swift"
+    regex: "(\\{(?=[\\w_]))"
+    message: "Use one space after open brace"
+    severity: error
+
+  one_space_after_closed_brace:
+    included: ".*\\.swift"
+    regex: "((?<=[\\)])\\})"
+    message: "Use one space after closed brace"
+    severity: error
