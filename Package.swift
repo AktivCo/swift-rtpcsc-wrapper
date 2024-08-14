@@ -1,4 +1,4 @@
-// swift-tools-version: 5.7
+// swift-tools-version: 5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -16,7 +16,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/rt-pcsc.git",
-                 revision: "be11610bf57c8eb04e07fdc175116289d46b742a")
+                 revision: "be11610bf57c8eb04e07fdc175116289d46b742a"),
+        .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins",
+                 from: "0.56.1")
     ],
     targets: [
         .target(
@@ -24,7 +26,10 @@ let package = Package(
             dependencies: [
                 .product(name: "RtPcsc",
                          package: "rt-pcsc")
-            ]
+            ],
+            plugins: [
+                 .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
+             ]
         )
     ]
 )

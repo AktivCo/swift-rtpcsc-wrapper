@@ -4,7 +4,7 @@
 RtPcscWrapper is wrapper of PCSC library for controlling states of VCRs and NFC reader.
 
 ## Requirements
-This library supports iOS 13 sdk and newer and swift-tools 5.7 and newer
+This library supports iOS 13 sdk and newer and swift-tools 5.9 and newer
 
 ## Installation
 **Swift Package Manager**
