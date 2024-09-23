@@ -11,7 +11,7 @@ variables:
 
 .vault_provision_secrets: &vault_secrets
   - PROJECT_ROLE="ci-swift-package"
-  - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=${PROJECT_ROLE} jwt=${CI_JOB_JWT})"
+  - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=${PROJECT_ROLE} jwt=${VAULT_JWT_TOKEN})"
 
   - SSH_PRIVATE_KEY="${HOME}/.ssh/id_rsa"
 
@@ -27,6 +27,9 @@ build:
   variables:
     RT_CI_VAGRANT_BOX_CPUS: 2
     RT_CI_VAGRANT_BOX_MEMORY: 4096
+  id_tokens:
+    VAULT_JWT_TOKEN:
+      aud: https://vault.aktivco.ru
   before_script:
     - *vault_secrets
 
