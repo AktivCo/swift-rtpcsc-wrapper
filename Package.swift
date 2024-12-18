@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/rt-pcsc.git",
-                 revision: "d6ee84c7c1101a5be27d3efe4fe1a644da2baff9"),
+                 revision: "df853588182dd203a163a345798fa62e99c205a2"),
         .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins",
                  from: "0.56.1")
     ],
