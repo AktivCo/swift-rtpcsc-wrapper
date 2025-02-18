@@ -61,16 +61,10 @@ public class RtPcscWrapper {
     private var context: SCARDCONTEXT?
 
     private var readersPublisher = CurrentValueSubject<[RtReader], Never>([])
-    private var isNfcSearchingActivePublisher = CurrentValueSubject<Bool, Never>(false)
 
     /// Available readers list publisher
     public var readers: AnyPublisher<[RtReader], Never> {
         readersPublisher.share().eraseToAnyPublisher()
-    }
-
-    /// Publisher of the state of the NFC scanning session
-    public var isNfcSearchingActive: AnyPublisher<Bool, Never> {
-        isNfcSearchingActivePublisher.share().eraseToAnyPublisher()
     }
 
     public init() {}
@@ -186,36 +180,6 @@ public class RtPcscWrapper {
         }
     }
 
-    /// Blocking function that waits until the NFC scanning session gets suspended
-    /// - Parameter readerName: Name of the reader where the NFC scanning session was created
-    ///
-    /// This function is necessary because of race condition between `PKCS token observer` and `StartNfc` function from the wrapper.
-    /// On the one side `StartNfc` is a blocking function that waits for token appearance. On the other side user can get token out from the NFC
-    /// scanner before PKCS finds the token. In this case we have to wait until the NFC scanning session gets suspended or user brings the token back.
-    public func waitForExchangeIsOver(withReader readerName: String) throws {
-        var state = SCARD_READERSTATE()
-        state.szReader = (readerName as NSString).utf8String
-        state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
-
-        guard let ctx = self.context else {
-            throw RtReaderError.invalidContext
-        }
-
-        defer {
-            self.isNfcSearchingActivePublisher.send(false)
-        }
-
-        repeat {
-            state.dwEventState = 0
-
-            guard SCARD_S_SUCCESS == SCardGetStatusChangeA(ctx, INFINITE, &state, 1) else {
-                throw RtReaderError.readerUnavailable
-            }
-
-            state.dwCurrentState = state.dwEventState & ~DWORD(SCARD_STATE_CHANGED)
-        } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
-    }
-
     /// Creates publisher that notifies about suspension of the NFC scanning session
     /// - Parameter readerName: Name of the reader where the NFC scanning session was created
     /// - Returns: A publisher that will notify when the state of the NFC reader changes to muted
@@ -286,7 +250,6 @@ public class RtPcscWrapper {
             throw RtReaderError.unknown
         }
 
-        isNfcSearchingActivePublisher.send(true)
         // Global SCardGetStatusChange loop can request reader types with SCardConnect call.
         // In this case we can receive events for NFC/VCR reader and should continue waiting for changing of slot state.
         repeat {
@@ -380,7 +343,7 @@ public class RtPcscWrapper {
 
         var resultLen: DWORD = 0
         guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
-                                  0, nil, 0, &resultLen) else {
+                                              0, nil, 0, &resultLen) else {
             throw RtReaderError.unknown
         }
 
@@ -390,7 +353,7 @@ public class RtPcscWrapper {
         }
 
         guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
-                                  0, pointer, DWORD(resultLen), &resultLen) else {
+                                              0, pointer, DWORD(resultLen), &resultLen) else {
             throw RtReaderError.unknown
         }
 
@@ -449,14 +412,14 @@ public class RtPcscWrapper {
         }
         context = ctx
 
-        var readerStates = StatesHolder(states: [])
+        Task.detached { [unowned self] in
+            var readerStates = StatesHolder(states: [])
 
-        var newReaderState = SCARD_READERSTATE()
-        newReaderState.szReader = allocatePointerForString(newReaderNotification)
-        newReaderState.dwCurrentState = DWORD(readerStates.states.count << 16)
-        readerStates.states.append(newReaderState)
+            var newReaderState = SCARD_READERSTATE()
+            newReaderState.szReader = allocatePointerForString(newReaderNotification)
+            newReaderState.dwCurrentState = DWORD(readerStates.states.count << 16)
+            readerStates.states.append(newReaderState)
 
-        DispatchQueue.global().async { [unowned self] in
             while true {
                 guard let ctx = context else {
                     return
@@ -470,9 +433,9 @@ public class RtPcscWrapper {
                 guard rv == PcscError.noError.int32Value else { continue }
 
                 let isAddedNewReader: (SCARD_READERSTATE) -> Bool = { [newReaderNotification] state in
-                      String(cString: state.szReader) == newReaderNotification &&
-                      state.dwEventState & UInt32(SCARD_STATE_CHANGED) != 0
-                  }
+                    String(cString: state.szReader) == newReaderNotification &&
+                    state.dwEventState & UInt32(SCARD_STATE_CHANGED) != 0
+                }
 
                 let isIgnoredReader: (SCARD_READERSTATE) -> Bool = {
                     $0.dwEventState == SCARD_STATE_UNKNOWN | SCARD_STATE_CHANGED | SCARD_STATE_IGNORE
