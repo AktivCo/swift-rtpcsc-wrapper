@@ -1,40 +1,8 @@
-import Combine
-
 import RtPcsc
 
 
-public enum RtReaderError: Error {
-    case unknown
-    case readerUnavailable
-    case invalidContext
-    case nfcIsStopped(RtNfcStopReason)
-}
-
-public enum RtNfcStopReason: UInt8 {
-    case finished = 0x00
-    case unknown = 0x01
-    case timeout = 0x02
-    case cancelledByUser = 0x03
-    case noError = 0x04
-    case unsupportedDevice = 0x05
-}
-
-public enum RtReaderType {
-    case unknown
-    case bt
-    case nfc
-    case vcr
-    case usb
-}
-
-public struct RtReader: Identifiable {
-    public var id = UUID()
-
-    public let name: String
-    public let type: RtReaderType
-}
-
-public class RtPcscWrapper {
+// The RtPcscWrapper class provides an interface for interacting with smart card readers and handling NFC sessions
+public actor RtPcscWrapper {
     private enum PcscError: UInt32 {
         case noError = 0x00000000
         case cancelled = 0x80100002
@@ -45,46 +13,238 @@ public class RtPcscWrapper {
         }
     }
 
-    private class StatesHolder {
-        var states: [SCARD_READERSTATE]
-
-        init(states: [SCARD_READERSTATE]) {
-            self.states = states
-        }
-
-        deinit {
-            states.forEach { state in state.szReader.deallocate() }
-        }
-    }
-
     private let newReaderNotification = "\\\\?PnP?\\Notification"
     private var context: SCARDCONTEXT?
 
-    private var readersPublisher = CurrentValueSubject<[RtReader], Never>([])
-
-    /// Available readers list publisher
-    public var readers: AnyPublisher<[RtReader], Never> {
-        readersPublisher.share().eraseToAnyPublisher()
-    }
-
     public init() {}
 
-    private func getLastNfcStopReason(ofHandle handle: SCARDHANDLE) -> UInt8 {
-        var result = UInt8(0)
-        var resultLen: DWORD = 0
-        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_LAST_NFC_STOP_REASON), nil,
-                                              0, &result, 1, &resultLen) else {
-            return RUTOKEN_NFC_STOP_REASON_UNKNOWN
+    // MARK: Public functions
+
+    /// Starts the NFC scanning session
+    /// - Parameters:
+    ///   - readerName: Name of the reader where the NFC scanning session has to be created
+    ///   - waitMessage: A message that will appear on the NFC scanning view until token is brought to the scanner
+    ///   - workMessage: A message that will appear on the NFC scanning view during connection with token
+    /// - Returns: AsyncStream that publishes current NfcSearchStatus
+    public func startNfcExchange(onReader readerName: String,
+                                 waitMessage: String,
+                                 workMessage: String) async -> AsyncStream<RtNfcSearchStatus> {
+        return AsyncStream { continuation in
+            Task.detached { [unowned self] in
+                defer { continuation.finish() }
+                do {
+                    try await startNfc(onReader: readerName, waitMessage: waitMessage, workMessage: workMessage)
+                    continuation.yield(.inProgress)
+                    try await nfcExchangeIsStopped(for: readerName)
+                    continuation.yield(.exchangeIsCompleted)
+                } catch let error as RtReaderError {
+                    continuation.yield(.exchangeIsStopped(error))
+                } catch {
+                    continuation.yield(.exchangeIsStopped(.unknown))
+                }
+            }
         }
-        return result
     }
 
-    private func allocatePointerForString(_ str: String) -> UnsafePointer<Int8> {
-        let toRawString = str + "\0"
-        let rawPointer = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Int8>.stride*toRawString.utf8.count,
-                                                          alignment: MemoryLayout<Int8>.alignment)
-        return UnsafePointer(rawPointer.initializeMemory(as: Int8.self, from: toRawString, count: toRawString.utf8.count))
+    /// Suspends the NFC scanning session
+    /// - Parameters:
+    ///   - readerName: Name of the reader where the NFC scanning has to be suspended
+    ///   - message: A message that will appear on the NFC scanning view
+    public func stopNfc(onReader readerName: String, withMessage message: String) throws {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+
+        var state = SCARD_READERSTATE()
+        state.szReader = (readerName as NSString).utf8String
+        state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
+
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_STOP_NFC), (message as NSString).utf8String,
+                                              DWORD(message.utf8.count), nil, 0, nil) else {
+            throw RtReaderError.unknown
+        }
     }
+
+    /// Returns a remaining time of when the NFC reader will be ready to search token again
+    /// - Parameter readerName: Name of the reader where the NFC reader
+    /// - Returns: Remaining time in seconds
+    public func getNfcCooldown(for readerName: String) throws -> UInt {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+
+        var result = UInt8(0)
+        var resultLen: DWORD = 0
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_NFC_COOLDOWN), nil,
+                                              0, &result, 1, &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        return UInt(result)
+    }
+
+    /// Suspend the loop observer for detecting new readers appearance
+    public func stop() {
+        guard let ctx = context else {
+            return
+        }
+
+        SCardCancel(ctx)
+        SCardReleaseContext(ctx)
+        context = nil
+    }
+
+    /// Creates the loop observer for detecting new readers appearance
+    /// - Returns: An AsyncStream of available readers or nil if the readers observer is already active
+    public func start() -> AsyncStream<[RtReader]>? {
+        guard context == nil else {
+            return nil
+        }
+
+        var ctx = SCARDCONTEXT()
+        guard SCardEstablishContext(DWORD(SCARD_SCOPE_USER), nil, nil, &ctx) == PcscError.noError.int32Value else {
+            fatalError("Unable to create SCardEstablishContext")
+        }
+        context = ctx
+
+        return AsyncStream { continuation in
+            Task.detached { [unowned self] in
+                var readerStates = StatesHolder(states: [])
+
+                var newReaderState = SCARD_READERSTATE()
+                newReaderState.szReader = RtPcscWrapper.allocatePointerForString(newReaderNotification)
+                newReaderState.dwCurrentState = await DWORD(readerStates.count() << 16)
+                await readerStates.append(newReaderState)
+
+                while true {
+                    guard let ctx = await context else {
+                        continuation.finish()
+                        return
+                    }
+                    let rv = await readerStates.ScardGetStatusChangeA(ctx: ctx, dwTimeout: INFINITE)
+                    guard rv != PcscError.cancelled.int32Value else {
+                        continuation.finish()
+                        return
+                    }
+                    guard rv == PcscError.noError.int32Value else { continue }
+
+                    let isAddedNewReader: (SCARD_READERSTATE) -> Bool = { [newReaderNotification] state in
+                        String(cString: state.szReader) == newReaderNotification &&
+                        state.dwEventState & UInt32(SCARD_STATE_CHANGED) != 0
+                    }
+
+                    let isIgnoredReader: (SCARD_READERSTATE) -> Bool = {
+                        $0.dwEventState == SCARD_STATE_UNKNOWN | SCARD_STATE_CHANGED | SCARD_STATE_IGNORE
+                    }
+
+                    if await readerStates.contains(predicate: { isAddedNewReader($0) || isIgnoredReader($0) }) {
+                        let readerNames = await getReaderList()
+                        continuation.yield(await mapReaderNames(readerNames: readerNames))
+                        readerStates = await getReaderStates(for: readerNames)
+
+                        var newReaderState = SCARD_READERSTATE()
+                        newReaderState.szReader = RtPcscWrapper.allocatePointerForString(newReaderNotification)
+                        newReaderState.dwCurrentState = await DWORD(readerStates.count() << 16)
+                        await readerStates.append(newReaderState)
+                    }
+                    await readerStates.map { oldState in
+                            guard String(cString: oldState.szReader) != newReaderNotification else {
+                                return oldState
+                            }
+                            return SCARD_READERSTATE(szReader: oldState.szReader,
+                                                     pvUserData: oldState.pvUserData,
+                                                     dwCurrentState: oldState.dwEventState & ~UInt32(SCARD_STATE_CHANGED),
+                                                     dwEventState: 0,
+                                                     cbAtr: oldState.cbAtr,
+                                                     rgbAtr: oldState.rgbAtr)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns a reason why the NFC scanning session got canceled
+    /// - Parameter readerName: Name of the reader where the NFC scanning was suspended
+    /// - Returns: Error that contains the actual reason
+    public func getLastNfcStopReason(onReader readerName: String) throws -> RtNfcStopReason {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+        return RtNfcStopReason(rawValue: RtPcscWrapper.getLastNfcStopReason(ofHandle: handle)) ?? .unknown
+    }
+
+    /// Returns VCR fingerprint related to connected application
+    /// - Parameter readerName: Name of the VCR
+    /// - Returns: Fingerprint for current VCR connection
+    public func getFingerprint(for readerName: String) throws -> Data {
+        guard let ctx = self.context else {
+            throw RtReaderError.invalidContext
+        }
+
+        var handle = SCARDHANDLE()
+        var activeProtocol = DWORD()
+
+        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
+                                               0, &handle, &activeProtocol) else {
+            throw RtReaderError.readerUnavailable
+        }
+        defer {
+            SCardDisconnect(handle, 0)
+        }
+
+        var resultLen: DWORD = 0
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
+                                              0, nil, 0, &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(resultLen))
+        defer {
+            pointer.deallocate()
+        }
+
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
+                                              0, pointer, DWORD(resultLen), &resultLen) else {
+            throw RtReaderError.unknown
+        }
+
+        return Data(bytes: pointer, count: Int(resultLen))
+    }
+
+    // MARK: Private functions
 
     private func getReaderList() -> [String] {
         guard let ctx = self.context else {
@@ -112,7 +272,7 @@ public class RtPcscWrapper {
         return readerNames
     }
 
-    private func getReaderStates(for readerNames: [String]) -> StatesHolder {
+    private func getReaderStates(for readerNames: [String]) async -> StatesHolder {
         guard let ctx = self.context else {
             return StatesHolder(states: [])
         }
@@ -123,17 +283,15 @@ public class RtPcscWrapper {
 
         let states: [SCARD_READERSTATE] = readerNames.map { name in
             var state = SCARD_READERSTATE()
-            state.szReader = allocatePointerForString(name)
+            state.szReader = RtPcscWrapper.allocatePointerForString(name)
             state.dwCurrentState = DWORD(SCARD_STATE_UNAWARE)
             return state
         }
 
         let holder = StatesHolder(states: states)
-
-        guard SCardGetStatusChangeA(ctx, 0, &holder.states, DWORD(holder.states.count)) == PcscError.noError.int32Value else {
+        guard await holder.ScardGetStatusChangeA(ctx: ctx, dwTimeout: 0) == PcscError.noError.int32Value else {
             return StatesHolder(states: [])
         }
-
         return holder
     }
 
@@ -180,42 +338,41 @@ public class RtPcscWrapper {
         }
     }
 
-    /// Creates publisher that notifies about suspension of the NFC scanning session
+    /// Notifies about suspension of the NFC scanning session
     /// - Parameter readerName: Name of the reader where the NFC scanning session was created
-    /// - Returns: A publisher that will notify when the state of the NFC reader changes to muted
+    /// - Returns: Nothing when NFC session ends successfully and NFC reader state changed to muted
+    /// - or throws an error if user cancelled NFC or reader is unavallable
     ///
     /// The "Muted" state means that the NFC reader doesn't have present searching session and doesn't have any available tokens too.
     ///
     /// This function is necessary because of race condition between `PKCS token observer` and `StartNfc` function from the wrapper.
     /// On the one side `StartNfc` is a blocking function that waits for token appearance. On the other side user can get token out from the NFC
     /// scanner before PKCS finds the token. In this case we have to wait until the NFC scanning session gets suspended or user brings the token back.
-    public func nfcExchangeIsStopped(for readerName: String) -> AnyPublisher<Void, Never> {
-        return Deferred {
-            Future { promise in
-                Task {
-                    defer {
-                        promise(.success(()))
-                    }
-                    var state = SCARD_READERSTATE()
-                    state.szReader = (readerName as NSString).utf8String
-                    state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
+    private func nfcExchangeIsStopped(for readerName: String) async throws {
+        return try await withCheckedThrowingContinuation { continuation in
+            Task.detached {
+                var state = SCARD_READERSTATE()
+                state.szReader = (readerName as NSString).utf8String
+                state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
 
-                    guard let ctx = self.context else {
-                        throw RtReaderError.invalidContext
-                    }
-
-                    repeat {
-                        state.dwEventState = 0
-
-                        guard SCARD_S_SUCCESS == SCardGetStatusChangeA(ctx, INFINITE, &state, 1) else {
-                            throw RtReaderError.readerUnavailable
-                        }
-
-                        state.dwCurrentState = state.dwEventState & ~DWORD(SCARD_STATE_CHANGED)
-                    } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
+                guard let ctx = await self.context else {
+                    continuation.resume(throwing: RtReaderError.invalidContext)
+                    return
                 }
+
+                repeat {
+                    state.dwEventState = 0
+
+                    guard SCARD_S_SUCCESS == SCardGetStatusChangeA(ctx, INFINITE, &state, 1) else {
+                        continuation.resume(throwing: RtReaderError.readerUnavailable)
+                        return
+                    }
+
+                    state.dwCurrentState = state.dwEventState & ~DWORD(SCARD_STATE_CHANGED)
+                } while (state.dwEventState & DWORD(SCARD_STATE_MUTE)) != SCARD_STATE_MUTE
+                continuation.resume(returning: ())
             }
-        }.eraseToAnyPublisher()
+        }
     }
 
     /// Creates the NFC scanning session
@@ -223,7 +380,7 @@ public class RtPcscWrapper {
     ///   - readerName: Name of the reader where the NFC scanning session has to be created
     ///   - waitMessage: A message that will appear on the NFC scanning view until token is brought to the scanner
     ///   - workMessage: A message that will appear on the NFC scanning view during connection with token
-    public func startNfc(onReader readerName: String, waitMessage: String, workMessage: String) throws {
+    private func startNfc(onReader readerName: String, waitMessage: String, workMessage: String) throws {
         guard let ctx = self.context else {
             throw RtReaderError.invalidContext
         }
@@ -259,213 +416,34 @@ public class RtPcscWrapper {
         } while state.dwEventState == SCARD_STATE_EMPTY
 
         guard (SCARD_STATE_PRESENT | SCARD_STATE_CHANGED | SCARD_STATE_INUSE) == state.dwEventState else {
-            let res = getLastNfcStopReason(ofHandle: handle)
+            let res = RtPcscWrapper.getLastNfcStopReason(ofHandle: handle)
             if let reason = RtNfcStopReason(rawValue: res) {
                 throw RtReaderError.nfcIsStopped(reason)
             }
-            throw RtReaderError.unknown
+            throw RtReaderError.nfcIsStopped(.unknown)
         }
     }
 
-    /// Suspends the NFC scanning session
-    /// - Parameters:
-    ///   - readerName: Name of the reader where the NFC scanning has to be suspended
-    ///   - message: A message that will appear on the NFC scanning view
-    public func stopNfc(onReader readerName: String, withMessage message: String) throws {
-        guard let ctx = self.context else {
-            throw RtReaderError.invalidContext
-        }
-
-        var handle = SCARDHANDLE()
-        var activeProtocol = DWORD()
-
-        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
-                                               0, &handle, &activeProtocol) else {
-            throw RtReaderError.readerUnavailable
-        }
-        defer {
-            SCardDisconnect(handle, 0)
-        }
-
-        var state = SCARD_READERSTATE()
-        state.szReader = (readerName as NSString).utf8String
-        state.dwCurrentState = DWORD(SCARD_STATE_EMPTY)
-
-        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_STOP_NFC), (message as NSString).utf8String,
-                                              DWORD(message.utf8.count), nil, 0, nil) else {
-            throw RtReaderError.unknown
-        }
+    private func mapReaderNames(readerNames: [String]) -> [RtReader] {
+        readerNames.map { RtReader(name: $0, type: getReaderType(for: $0)) }
     }
+}
 
-    /// Returns a reason why the NFC scanning session got canceled
-    /// - Parameter readerName: Name of the reader where the NFC scanning was suspended
-    /// - Returns: Error that contains the actual reason
-    public func getLastNfcStopReason(onReader readerName: String) throws -> RtReaderError {
-        guard let ctx = self.context else {
-            throw RtReaderError.invalidContext
-        }
-
-        var handle = SCARDHANDLE()
-        var activeProtocol = DWORD()
-
-        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
-                                               0, &handle, &activeProtocol) else {
-            throw RtReaderError.readerUnavailable
-        }
-        defer {
-            SCardDisconnect(handle, 0)
-        }
-
-        if let reason = RtNfcStopReason(rawValue: getLastNfcStopReason(ofHandle: handle)) {
-            return RtReaderError.nfcIsStopped(reason)
-        }
-        return RtReaderError.unknown
-    }
-
-    /// Returns VCR fingerprint related to connected application
-    /// - Parameter readerName: Name of the VCR
-    /// - Returns: Fingerprint for current VCR connection
-    public func getFingerprint(for readerName: String) throws -> Data {
-        guard let ctx = self.context else {
-            throw RtReaderError.invalidContext
-        }
-
-        var handle = SCARDHANDLE()
-        var activeProtocol = DWORD()
-
-        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
-                                               0, &handle, &activeProtocol) else {
-            throw RtReaderError.readerUnavailable
-        }
-        defer {
-            SCardDisconnect(handle, 0)
-        }
-
-        var resultLen: DWORD = 0
-        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
-                                              0, nil, 0, &resultLen) else {
-            throw RtReaderError.unknown
-        }
-
-        let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(resultLen))
-        defer {
-            pointer.deallocate()
-        }
-
-        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_VCR_FINGERPRINT), nil,
-                                              0, pointer, DWORD(resultLen), &resultLen) else {
-            throw RtReaderError.unknown
-        }
-
-        return Data(bytes: pointer, count: Int(resultLen))
-    }
-
-    /// Returns a remaining time of when the NFC reader will be ready to search token again
-    /// - Parameter readerName: Name of the reader where the NFC reader
-    /// - Returns: Remaining time in seconds
-    public func getNfcCooldown(for readerName: String) throws -> UInt {
-        guard let ctx = self.context else {
-            throw RtReaderError.invalidContext
-        }
-
-        var handle = SCARDHANDLE()
-        var activeProtocol = DWORD()
-
-        guard SCARD_S_SUCCESS == SCardConnectA(ctx, readerName, DWORD(SCARD_SHARE_DIRECT),
-                                               0, &handle, &activeProtocol) else {
-            throw RtReaderError.readerUnavailable
-        }
-        defer {
-            SCardDisconnect(handle, 0)
-        }
-
+extension RtPcscWrapper {
+    static private func getLastNfcStopReason(ofHandle handle: SCARDHANDLE) -> UInt8 {
         var result = UInt8(0)
         var resultLen: DWORD = 0
-        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_NFC_COOLDOWN), nil,
+        guard SCARD_S_SUCCESS == SCardControl(handle, DWORD(RUTOKEN_CONTROL_CODE_LAST_NFC_STOP_REASON), nil,
                                               0, &result, 1, &resultLen) else {
-            throw RtReaderError.unknown
+            return RUTOKEN_NFC_STOP_REASON_UNKNOWN
         }
-
-        return UInt(result)
+        return result
     }
 
-    /// Suspend the loop observer for detecting new readers appearance
-    public func stop() {
-        guard let ctx = context else {
-            return
-        }
-
-        SCardCancel(ctx)
-        SCardReleaseContext(ctx)
-        context = nil
-    }
-
-    /// Creates the loop observer for detecting new readers appearance
-    public func start() {
-        guard context == nil else {
-            return
-        }
-
-        var ctx = SCARDCONTEXT()
-        guard SCardEstablishContext(DWORD(SCARD_SCOPE_USER), nil, nil, &ctx) == PcscError.noError.int32Value else {
-            fatalError("Unable to create SCardEstablishContext")
-        }
-        context = ctx
-
-        Task.detached { [unowned self] in
-            var readerStates = StatesHolder(states: [])
-
-            var newReaderState = SCARD_READERSTATE()
-            newReaderState.szReader = allocatePointerForString(newReaderNotification)
-            newReaderState.dwCurrentState = DWORD(readerStates.states.count << 16)
-            readerStates.states.append(newReaderState)
-
-            while true {
-                guard let ctx = context else {
-                    return
-                }
-
-                let rv = SCardGetStatusChangeA(ctx,
-                                               INFINITE,
-                                               &readerStates.states,
-                                               DWORD(readerStates.states.count))
-                guard rv != PcscError.cancelled.int32Value else { return }
-                guard rv == PcscError.noError.int32Value else { continue }
-
-                let isAddedNewReader: (SCARD_READERSTATE) -> Bool = { [newReaderNotification] state in
-                    String(cString: state.szReader) == newReaderNotification &&
-                    state.dwEventState & UInt32(SCARD_STATE_CHANGED) != 0
-                }
-
-                let isIgnoredReader: (SCARD_READERSTATE) -> Bool = {
-                    $0.dwEventState == SCARD_STATE_UNKNOWN | SCARD_STATE_CHANGED | SCARD_STATE_IGNORE
-                }
-
-                if readerStates.states.contains(where: { isAddedNewReader($0) || isIgnoredReader($0) }) {
-                    let readerNames = getReaderList()
-                    readersPublisher.send(readerNames.map { RtReader(name: $0, type: getReaderType(for: $0)) })
-                    readerStates = getReaderStates(for: readerNames)
-
-                    var newReaderState = SCARD_READERSTATE()
-                    newReaderState.szReader = allocatePointerForString(newReaderNotification)
-                    newReaderState.dwCurrentState = DWORD(readerStates.states.count << 16)
-                    readerStates.states.append(newReaderState)
-                }
-
-                readerStates.states = readerStates.states
-                    .map { oldState in
-                        guard String(cString: oldState.szReader) != newReaderNotification else {
-                            return oldState
-                        }
-
-                        return SCARD_READERSTATE(szReader: oldState.szReader,
-                                                 pvUserData: oldState.pvUserData,
-                                                 dwCurrentState: oldState.dwEventState & ~UInt32(SCARD_STATE_CHANGED),
-                                                 dwEventState: 0,
-                                                 cbAtr: oldState.cbAtr,
-                                                 rgbAtr: oldState.rgbAtr)
-                    }
-            }
-        }
+    static private func allocatePointerForString(_ str: String) -> UnsafePointer<Int8> {
+        let toRawString = str + "\0"
+        let rawPointer = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Int8>.stride*toRawString.utf8.count,
+                                                          alignment: MemoryLayout<Int8>.alignment)
+        return UnsafePointer(rawPointer.initializeMemory(as: Int8.self, from: toRawString, count: toRawString.utf8.count))
     }
 }
