@@ -15,17 +15,17 @@ let package = Package(
             targets: ["RtPcscWrapper"])
     ],
     dependencies: [
-        .package(url: "git@scm.aktivco.ru:rutoken/dev/ios-projects/swift-packages/binary-packages/rt-pcsc.git", 
-                 revision: "c598ad7d3274b3dd7271f2eb6c3789c9adffab14"),
+        .package(url: "https://github.com/AktivCo/swift-rtpcsc-binary.git",
+                 exact: "5.5.1"),
         .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins",
-                 from: "0.56.1")
+                 exact: "0.56.1")
     ],
     targets: [
         .target(
             name: "RtPcscWrapper",
             dependencies: [
                 .product(name: "RtPcsc",
-                         package: "rt-pcsc")
+                         package: "swift-rtpcsc-binary")
             ],
             plugins: [
                  .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
